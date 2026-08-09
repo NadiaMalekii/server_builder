@@ -5,6 +5,7 @@ set -euo pipefail
 PROMTAIL_VERSION="${PROMTAIL_VERSION:-3.5.0}"
 NODE_EXPORTER_VERSION="${NODE_EXPORTER_VERSION:-1.9.1}"
 NODE_EXPORTER_LISTEN_ADDRESS="${NODE_EXPORTER_LISTEN_ADDRESS:-0.0.0.0:9100}"
+INSTALL_NODE_EXPORTER="${INSTALL_NODE_EXPORTER:-true}"
 
 fail() {
   printf 'ERROR: %s\n' "$*" >&2
@@ -14,6 +15,10 @@ fail() {
 [[ "$(id -u)" -eq 0 ]] || fail 'this installer must run as root'
 command -v systemctl >/dev/null 2>&1 || fail 'systemd is required'
 [[ -n "${LOKI_PUSH_URL:-}" ]] || fail 'LOKI_PUSH_URL is required'
+case "$INSTALL_NODE_EXPORTER" in
+  true|false) ;;
+  *) fail 'INSTALL_NODE_EXPORTER must be true or false' ;;
+esac
 
 case "$LOKI_PUSH_URL" in
   http://*|https://*) ;;
@@ -26,9 +31,13 @@ esac
 PROMTAIL_VERSION="${PROMTAIL_VERSION#v}"
 NODE_EXPORTER_VERSION="${NODE_EXPORTER_VERSION#v}"
 [[ "$PROMTAIL_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail 'PROMTAIL_VERSION must look like 1.2.3'
-[[ "$NODE_EXPORTER_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail 'NODE_EXPORTER_VERSION must look like 1.2.3'
-if [[ ! "$NODE_EXPORTER_LISTEN_ADDRESS" =~ ^[[:alnum:].:-]+$ && ! "$NODE_EXPORTER_LISTEN_ADDRESS" =~ ^\[[[:alnum:].:]+\]:[0-9]+$ ]]; then
-  fail 'NODE_EXPORTER_LISTEN_ADDRESS contains unsupported characters'
+if [[ "$INSTALL_NODE_EXPORTER" == true ]]; then
+  [[ "$NODE_EXPORTER_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail 'NODE_EXPORTER_VERSION must look like 1.2.3'
+  case "$NODE_EXPORTER_LISTEN_ADDRESS" in
+    ''|*$'\n'*|*$'\r'*|*[[:space:]]*|*'%'*|*'"'*)
+      fail 'NODE_EXPORTER_LISTEN_ADDRESS contains unsupported characters'
+      ;;
+  esac
 fi
 
 HOST_LABEL="${VPS_NAME:-$(hostname -s)}"
@@ -203,7 +212,8 @@ ReadWritePaths=/var/lib/promtail
 WantedBy=multi-user.target
 EOF
 
-  cat > /etc/systemd/system/node_exporter.service <<EOF
+  if [[ "$INSTALL_NODE_EXPORTER" == true ]]; then
+    cat > /etc/systemd/system/node_exporter.service <<EOF
 [Unit]
 Description=Prometheus Node Exporter
 Wants=network-online.target
@@ -223,6 +233,7 @@ ProtectSystem=full
 [Install]
 WantedBy=multi-user.target
 EOF
+  fi
 }
 
 prepare_directories() {
@@ -236,22 +247,30 @@ prepare_directories() {
 
 install_dependencies
 ensure_service_user promtail
-ensure_service_user node_exporter
+if [[ "$INSTALL_NODE_EXPORTER" == true ]]; then
+  ensure_service_user node_exporter
+fi
 usermod -a -G adm promtail 2>/dev/null || true
 prepare_directories
 
 DOWNLOAD_DIR="$(mktemp -d)"
 trap 'rm -rf "$DOWNLOAD_DIR"' EXIT
 install_promtail
-install_node_exporter
+if [[ "$INSTALL_NODE_EXPORTER" == true ]]; then
+  install_node_exporter
+fi
 write_promtail_config
 write_service_units
 
 systemctl daemon-reload
-systemctl enable promtail.service node_exporter.service
+systemctl enable promtail.service
 systemctl restart promtail.service
-systemctl restart node_exporter.service
 systemctl is-active --quiet promtail.service || fail 'Promtail failed to start'
-systemctl is-active --quiet node_exporter.service || fail 'Node Exporter failed to start'
-
-printf 'Promtail %s and Node Exporter %s are active on %s\n' "$PROMTAIL_VERSION" "$NODE_EXPORTER_VERSION" "$HOST_LABEL"
+if [[ "$INSTALL_NODE_EXPORTER" == true ]]; then
+  systemctl enable node_exporter.service
+  systemctl restart node_exporter.service
+  systemctl is-active --quiet node_exporter.service || fail 'Node Exporter failed to start'
+  printf 'Promtail %s and Node Exporter %s are active on %s\n' "$PROMTAIL_VERSION" "$NODE_EXPORTER_VERSION" "$HOST_LABEL"
+else
+  printf 'Promtail %s is active on %s; Node Exporter was skipped\n' "$PROMTAIL_VERSION" "$HOST_LABEL"
+fi

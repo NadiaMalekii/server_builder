@@ -24,7 +24,8 @@ The installer supports amd64, arm64, and armv7 VPS architectures.
 
 1. Open **Actions > Deploy VPS monitoring agents**.
 2. Select **Run workflow**.
-3. Keep the defaults or enter the Promtail and Node Exporter versions to install.
+3. Leave **Install and start Node Exporter** unchecked for a Promtail-only deployment, or enable it when Node Exporter is ready.
+4. Keep the defaults or enter the Promtail and Node Exporter versions to install.
 
 The workflow is manual by design so a normal repository push cannot change a VPS unexpectedly.
 

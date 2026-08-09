@@ -13,6 +13,11 @@ on:
         required: true
         default: '1.9.1'
         type: string
+      install_node_exporter:
+        description: Install and start Node Exporter
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -32,6 +37,7 @@ jobs:
       NODE_EXPORTER_LISTEN_ADDRESS: ${{ secrets.NODE_EXPORTER_LISTEN_ADDRESS || '0.0.0.0:9100' }}
       PROMTAIL_VERSION: ${{ inputs.promtail_version || '3.5.0' }}
       NODE_EXPORTER_VERSION: ${{ inputs.node_exporter_version || '1.9.1' }}
+      INSTALL_NODE_EXPORTER: ${{ inputs.install_node_exporter }}
 
     steps:
       - name: Check out installer
@@ -75,6 +81,7 @@ jobs:
             printf 'export LOKI_PUSH_URL=%q\n' "$LOKI_PUSH_URL"
             printf 'export VPS_NAME=%q\n' "$VPS_NAME"
             printf 'export NODE_EXPORTER_LISTEN_ADDRESS=%q\n' "$NODE_EXPORTER_LISTEN_ADDRESS"
+            printf 'export INSTALL_NODE_EXPORTER=%q\n' "$INSTALL_NODE_EXPORTER"
             cat "$installer"
           } | ssh \
             -i "$HOME/.ssh/deploy_key" \
