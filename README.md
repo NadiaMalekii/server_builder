@@ -16,7 +16,7 @@ Create these repository secrets under **Settings > Secrets and variables > Actio
 | `VPS_NAME` | No | Label used in Loki; defaults to the VPS hostname |
 | `NODE_EXPORTER_LISTEN_ADDRESS` | No | Listen address; defaults to `0.0.0.0:9100` |
 
-The VPS must be a systemd-based Linux host with outbound access to GitHub and the configured Loki endpoint. The SSH user must be able to run `sudo -n bash -s` without a password prompt.
+The VPS must be a systemd-based Linux host with outbound access to GitHub and the configured Loki endpoint. The SSH user must be able to run `sudo -n /usr/bin/bash -s` without a password prompt.
 
 The installer supports amd64, arm64, and armv7 VPS architectures.
 

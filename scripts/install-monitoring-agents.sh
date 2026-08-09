@@ -223,15 +223,20 @@ WantedBy=multi-user.target
 EOF
 }
 
+prepare_directories() {
+  install -d -m 0755 /usr/local/bin /etc/systemd/system
+  install -d -m 0750 -o root -g promtail /etc/promtail
+  install -d -m 0750 -o promtail -g promtail /var/lib/promtail
+  touch /var/lib/promtail/positions.yaml
+  chown promtail:promtail /var/lib/promtail/positions.yaml
+  chmod 0640 /var/lib/promtail/positions.yaml
+}
+
 install_dependencies
 ensure_service_user promtail
 ensure_service_user node_exporter
 usermod -a -G adm promtail 2>/dev/null || true
-
-install -d -m 0750 -o promtail -g promtail /var/lib/promtail
-touch /var/lib/promtail/positions.yaml
-chown promtail:promtail /var/lib/promtail/positions.yaml
-chmod 0640 /var/lib/promtail/positions.yaml
+prepare_directories
 
 DOWNLOAD_DIR="$(mktemp -d)"
 trap 'rm -rf "$DOWNLOAD_DIR"' EXIT

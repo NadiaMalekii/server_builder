@@ -84,4 +84,4 @@ jobs:
             -o StrictHostKeyChecking=no \
             -o UserKnownHostsFile=/dev/null \
             "$VPS_USERNAME@$VPS_HOST" \
-            'sudo -n bash -s'
+            'sudo -n /usr/bin/bash -s'
