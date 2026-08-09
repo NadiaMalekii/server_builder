@@ -1,0 +1,89 @@
+name: Deploy VPS monitoring agents
+
+on:
+  workflow_dispatch:
+    inputs:
+      promtail_version:
+        description: Promtail release version without the v prefix
+        required: true
+        default: '3.5.0'
+        type: string
+      node_exporter_version:
+        description: Node Exporter release version without the v prefix
+        required: true
+        default: '1.9.1'
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy to configured VPS
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      VPS_HOST: ${{ secrets.VPS_HOST }}
+      VPS_PORT: ${{ secrets.VPS_PORT || '22' }}
+      VPS_USERNAME: ${{ secrets.VPS_USERNAME }}
+      VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+      VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+      VPS_NAME: ${{ secrets.VPS_NAME || '' }}
+      LOKI_PUSH_URL: ${{ secrets.LOKI_PUSH_URL }}
+      NODE_EXPORTER_LISTEN_ADDRESS: ${{ secrets.NODE_EXPORTER_LISTEN_ADDRESS || '0.0.0.0:9100' }}
+      PROMTAIL_VERSION: ${{ inputs.promtail_version || '3.5.0' }}
+      NODE_EXPORTER_VERSION: ${{ inputs.node_exporter_version || '1.9.1' }}
+
+    steps:
+      - name: Check out installer
+        uses: actions/checkout@v4
+
+      - name: Check required secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for variable in VPS_HOST VPS_USERNAME VPS_SSH_KEY VPS_KNOWN_HOSTS LOKI_PUSH_URL; do
+            if [[ -z "${!variable:-}" ]]; then
+              echo "::error title=Missing secret::$variable must be configured in repository secrets"
+              exit 1
+            fi
+          done
+
+          if [[ ! "$VPS_PORT" =~ ^[0-9]+$ ]] || (( VPS_PORT < 1 || VPS_PORT > 65535 )); then
+            echo '::error title=Invalid VPS_PORT::VPS_PORT must be a TCP port between 1 and 65535'
+            exit 1
+          fi
+
+      - name: Configure SSH
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$VPS_SSH_KEY" > "$HOME/.ssh/deploy_key"
+          printf '%s\n' "$VPS_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/deploy_key" "$HOME/.ssh/known_hosts"
+
+      - name: Install and start agents
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          installer="$GITHUB_WORKSPACE/scripts/install-monitoring-agents.sh"
+          {
+            printf 'export PROMTAIL_VERSION=%q\n' "$PROMTAIL_VERSION"
+            printf 'export NODE_EXPORTER_VERSION=%q\n' "$NODE_EXPORTER_VERSION"
+            printf 'export LOKI_PUSH_URL=%q\n' "$LOKI_PUSH_URL"
+            printf 'export VPS_NAME=%q\n' "$VPS_NAME"
+            printf 'export NODE_EXPORTER_LISTEN_ADDRESS=%q\n' "$NODE_EXPORTER_LISTEN_ADDRESS"
+            cat "$installer"
+          } | ssh \
+            -i "$HOME/.ssh/deploy_key" \
+            -p "$VPS_PORT" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
+            "$VPS_USERNAME@$VPS_HOST" \
+            'sudo -n bash -s'
