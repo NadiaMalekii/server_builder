@@ -7,14 +7,23 @@ NODE_EXPORTER_VERSION="${NODE_EXPORTER_VERSION:-1.9.1}"
 NODE_EXPORTER_LISTEN_ADDRESS="${NODE_EXPORTER_LISTEN_ADDRESS:-0.0.0.0:9100}"
 INSTALL_NODE_EXPORTER="${INSTALL_NODE_EXPORTER:-true}"
 
+BASE_DIR='/opt/vps-monitoring'
+PROMTAIL_DIR="$BASE_DIR/promtail"
+PROMTAIL_CONFIG="$PROMTAIL_DIR/config.yml"
+PROMTAIL_POSITIONS="$PROMTAIL_DIR/positions"
+PROMTAIL_CONTAINER='vps-promtail'
+NODE_EXPORTER_CONTAINER='vps-node-exporter'
+
 fail() {
   printf 'ERROR: %s\n' "$*" >&2
   exit 1
 }
 
 [[ "$(id -u)" -eq 0 ]] || fail 'this installer must run as root'
-command -v systemctl >/dev/null 2>&1 || fail 'systemd is required'
+command -v docker >/dev/null 2>&1 || fail 'Docker Engine is required on the VPS'
+docker info >/dev/null 2>&1 || fail 'Docker Engine is not running or is not accessible'
 [[ -n "${LOKI_PUSH_URL:-}" ]] || fail 'LOKI_PUSH_URL is required'
+
 case "$INSTALL_NODE_EXPORTER" in
   true|false) ;;
   *) fail 'INSTALL_NODE_EXPORTER must be true or false' ;;
@@ -31,6 +40,9 @@ esac
 PROMTAIL_VERSION="${PROMTAIL_VERSION#v}"
 NODE_EXPORTER_VERSION="${NODE_EXPORTER_VERSION#v}"
 [[ "$PROMTAIL_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail 'PROMTAIL_VERSION must look like 1.2.3'
+PROMTAIL_IMAGE="grafana/promtail:${PROMTAIL_VERSION}"
+NODE_EXPORTER_IMAGE="prom/node-exporter:v${NODE_EXPORTER_VERSION}"
+
 if [[ "$INSTALL_NODE_EXPORTER" == true ]]; then
   [[ "$NODE_EXPORTER_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail 'NODE_EXPORTER_VERSION must look like 1.2.3'
   case "$NODE_EXPORTER_LISTEN_ADDRESS" in
@@ -43,103 +55,26 @@ fi
 HOST_LABEL="${VPS_NAME:-$(hostname -s)}"
 [[ "$HOST_LABEL" =~ ^[A-Za-z0-9._-]+$ ]] || fail 'VPS_NAME must contain only letters, numbers, dots, underscores, or hyphens'
 
-case "$(uname -m)" in
-  x86_64|amd64)
-    PROMTAIL_ARCH='amd64'
-    NODE_EXPORTER_ARCH='amd64'
-    ;;
-  aarch64|arm64)
-    PROMTAIL_ARCH='arm64'
-    NODE_EXPORTER_ARCH='arm64'
-    ;;
-  armv7l)
-    PROMTAIL_ARCH='arm'
-    NODE_EXPORTER_ARCH='armv7'
-    ;;
-  *)
-    fail "unsupported CPU architecture: $(uname -m); supported architectures are amd64, arm64, and armv7"
-    ;;
-esac
+DOCKER_LOGS_ENABLED='false'
+[[ -d /var/lib/docker/containers ]] && DOCKER_LOGS_ENABLED='true'
 
-install_dependencies() {
-  if command -v apt-get >/dev/null 2>&1; then
-    export DEBIAN_FRONTEND=noninteractive
-    apt-get update
-    apt-get install -y --no-install-recommends ca-certificates curl gzip tar unzip
-  elif command -v dnf >/dev/null 2>&1; then
-    dnf install -y ca-certificates curl gzip tar unzip
-  elif command -v yum >/dev/null 2>&1; then
-    yum install -y ca-certificates curl gzip tar unzip
-  elif command -v apk >/dev/null 2>&1; then
-    apk add --no-cache ca-certificates curl gzip tar unzip
-  else
-    fail 'supported package manager not found; install curl, tar, gzip, and unzip first'
+prepare_directories() {
+  install -d -m 0755 "$BASE_DIR"
+  install -d -m 0750 "$PROMTAIL_DIR"
+  install -d -m 0750 "$PROMTAIL_POSITIONS"
+
+  # Reuse positions from an earlier direct Promtail installation if present.
+  if [[ -f /var/lib/promtail/positions.yaml && ! -f "$PROMTAIL_POSITIONS/positions.yaml" ]]; then
+    cp /var/lib/promtail/positions.yaml "$PROMTAIL_POSITIONS/positions.yaml"
   fi
-}
-
-ensure_service_user() {
-  local user="$1"
-  local nologin
-
-  nologin="$(command -v nologin || true)"
-  nologin="${nologin:-/bin/false}"
-  if ! id "$user" >/dev/null 2>&1; then
-    useradd --system --no-create-home --shell "$nologin" --user-group "$user"
-  fi
-}
-
-download() {
-  curl --fail --silent --show-error --location --retry 3 --connect-timeout 20 "$1" --output "$2"
-}
-
-verify_checksum() {
-  local checksum_file="$1"
-  local asset_name="$2"
-  local asset_path="$3"
-  local expected
-
-  expected="$(awk -v asset="$asset_name" '$2 == asset { print $1; exit }' "$checksum_file")"
-  [[ "$expected" =~ ^[A-Fa-f0-9]{64}$ ]] || fail "checksum for $asset_name was not found"
-  printf '%s  %s\n' "$expected" "$asset_path" | sha256sum -c -
-}
-
-install_promtail() {
-  local asset="promtail-linux-${PROMTAIL_ARCH}.zip"
-  local archive="$DOWNLOAD_DIR/$asset"
-  local checksums="$DOWNLOAD_DIR/promtail-SHA256SUMS"
-  local extracted_binary
-
-  download "https://github.com/grafana/loki/releases/download/v${PROMTAIL_VERSION}/${asset}" "$archive"
-  download "https://github.com/grafana/loki/releases/download/v${PROMTAIL_VERSION}/SHA256SUMS" "$checksums"
-  verify_checksum "$checksums" "$asset" "$archive"
-
-  mkdir -p "$DOWNLOAD_DIR/promtail"
-  unzip -q "$archive" -d "$DOWNLOAD_DIR/promtail"
-  extracted_binary="$(find "$DOWNLOAD_DIR/promtail" -type f -name 'promtail*' -print -quit)"
-  [[ -n "$extracted_binary" ]] || fail 'Promtail binary was not found in the release archive'
-  install -o root -g root -m 0755 "$extracted_binary" /usr/local/bin/promtail
-}
-
-install_node_exporter() {
-  local asset="node_exporter-${NODE_EXPORTER_VERSION}.linux-${NODE_EXPORTER_ARCH}.tar.gz"
-  local archive="$DOWNLOAD_DIR/$asset"
-  local checksums="$DOWNLOAD_DIR/node-exporter-sha256sums.txt"
-  local extracted_binary
-
-  download "https://github.com/prometheus/node_exporter/releases/download/v${NODE_EXPORTER_VERSION}/${asset}" "$archive"
-  download "https://github.com/prometheus/node_exporter/releases/download/v${NODE_EXPORTER_VERSION}/sha256sums.txt" "$checksums"
-  verify_checksum "$checksums" "$asset" "$archive"
-
-  tar -xzf "$archive" -C "$DOWNLOAD_DIR"
-  extracted_binary="$DOWNLOAD_DIR/node_exporter-${NODE_EXPORTER_VERSION}.linux-${NODE_EXPORTER_ARCH}/node_exporter"
-  [[ -f "$extracted_binary" ]] || fail 'Node Exporter binary was not found in the release archive'
-  install -o root -g root -m 0755 "$extracted_binary" /usr/local/bin/node_exporter
+  touch "$PROMTAIL_POSITIONS/positions.yaml"
+  chown -R root:root "$PROMTAIL_POSITIONS"
+  chmod 0600 "$PROMTAIL_POSITIONS/positions.yaml"
 }
 
 write_promtail_config() {
-  local config_tmp='/etc/promtail/config.yml.tmp'
+  local config_tmp="$PROMTAIL_CONFIG.tmp"
 
-  install -d -m 0750 -o root -g promtail /etc/promtail
   cat > "$config_tmp" <<EOF
 server:
   http_listen_address: 127.0.0.1
@@ -170,107 +105,110 @@ scrape_configs:
           host: '${HOST_LABEL}'
           __path__: /var/log/messages
 EOF
-  chown root:promtail "$config_tmp"
-  chmod 0640 "$config_tmp"
-  mv -f "$config_tmp" /etc/promtail/config.yml
-}
 
-write_service_units() {
-  local supplementary_groups=''
-  local groups=()
-
-  if getent group adm >/dev/null 2>&1; then
-    groups+=(adm)
-  fi
-  if getent group systemd-journal >/dev/null 2>&1; then
-    groups+=(systemd-journal)
-  fi
-  if ((${#groups[@]} > 0)); then
-    supplementary_groups="SupplementaryGroups=${groups[*]}"
-  fi
-
-  cat > /etc/systemd/system/promtail.service <<EOF
-[Unit]
-Description=Promtail log shipper
-Wants=network-online.target
-After=network-online.target
-
-[Service]
-Type=simple
-User=promtail
-Group=promtail
-${supplementary_groups}
-ExecStart=/usr/local/bin/promtail -config.file=/etc/promtail/config.yml
-Restart=on-failure
-RestartSec=5s
-NoNewPrivileges=true
-ProtectHome=true
-ProtectSystem=full
-ReadWritePaths=/var/lib/promtail
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-  if [[ "$INSTALL_NODE_EXPORTER" == true ]]; then
-    cat > /etc/systemd/system/node_exporter.service <<EOF
-[Unit]
-Description=Prometheus Node Exporter
-Wants=network-online.target
-After=network-online.target
-
-[Service]
-Type=simple
-User=node_exporter
-Group=node_exporter
-ExecStart=/usr/local/bin/node_exporter --web.listen-address=${NODE_EXPORTER_LISTEN_ADDRESS}
-Restart=on-failure
-RestartSec=5s
-NoNewPrivileges=true
-ProtectHome=true
-ProtectSystem=full
-
-[Install]
-WantedBy=multi-user.target
+  if [[ "$DOCKER_LOGS_ENABLED" == true ]]; then
+    cat >> "$config_tmp" <<EOF
+  - job_name: docker
+    pipeline_stages:
+      - docker: {}
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: docker
+          host: '${HOST_LABEL}'
+          __path__: /var/lib/docker/containers/*/*-json.log
+    relabel_configs:
+      - source_labels:
+          - __path__
+        regex: /var/lib/docker/containers/([^/]+)/.*-json.log
+        target_label: container_id
 EOF
   fi
+
+  chown root:root "$config_tmp"
+  chmod 0600 "$config_tmp"
+  mv -f "$config_tmp" "$PROMTAIL_CONFIG"
 }
 
-prepare_directories() {
-  install -d -m 0755 /usr/local/bin /etc/systemd/system
-  install -d -m 0750 -o root -g promtail /etc/promtail
-  install -d -m 0750 -o promtail -g promtail /var/lib/promtail
-  touch /var/lib/promtail/positions.yaml
-  chown promtail:promtail /var/lib/promtail/positions.yaml
-  chmod 0640 /var/lib/promtail/positions.yaml
+remove_direct_promtail() {
+  if [[ -f /etc/systemd/system/promtail.service ]]; then
+    systemctl disable --now promtail.service 2>/dev/null || true
+    rm -f /etc/systemd/system/promtail.service
+    systemctl daemon-reload
+  fi
+  rm -f /usr/local/bin/promtail
 }
 
-install_dependencies
-ensure_service_user promtail
-if [[ "$INSTALL_NODE_EXPORTER" == true ]]; then
-  ensure_service_user node_exporter
-fi
-usermod -a -G adm promtail 2>/dev/null || true
+remove_direct_node_exporter() {
+  if [[ -f /etc/systemd/system/node_exporter.service ]]; then
+    systemctl disable --now node_exporter.service 2>/dev/null || true
+    rm -f /etc/systemd/system/node_exporter.service
+    systemctl daemon-reload
+  fi
+  rm -f /usr/local/bin/node_exporter
+}
+
+container_is_running() {
+  [[ "$(docker inspect -f '{{.State.Running}}' "$1" 2>/dev/null || true)" == 'true' ]]
+}
+
+start_promtail() {
+  docker pull "$PROMTAIL_IMAGE"
+  docker rm -f "$PROMTAIL_CONTAINER" >/dev/null 2>&1 || true
+
+  local volume_args=(
+    --volume "$PROMTAIL_CONFIG:/etc/promtail/config.yml:ro"
+    --volume "$PROMTAIL_POSITIONS:/var/lib/promtail"
+    --volume '/var/log:/var/log:ro'
+  )
+  if [[ "$DOCKER_LOGS_ENABLED" == true ]]; then
+    volume_args+=(--volume '/var/lib/docker/containers:/var/lib/docker/containers:ro')
+  fi
+
+  docker run --detach \
+    --name "$PROMTAIL_CONTAINER" \
+    --restart unless-stopped \
+    --user 0:0 \
+    --read-only \
+    --tmpfs '/tmp:rw,noexec,nosuid,size=64m' \
+    --security-opt no-new-privileges=true \
+    "${volume_args[@]}" \
+    "$PROMTAIL_IMAGE" \
+    -config.file=/etc/promtail/config.yml
+
+  container_is_running "$PROMTAIL_CONTAINER" || fail 'Promtail Docker container failed to start'
+}
+
+start_node_exporter() {
+  remove_direct_node_exporter
+  docker pull "$NODE_EXPORTER_IMAGE"
+  docker rm -f "$NODE_EXPORTER_CONTAINER" >/dev/null 2>&1 || true
+
+  docker run --detach \
+    --name "$NODE_EXPORTER_CONTAINER" \
+    --restart unless-stopped \
+    --network host \
+    --pid host \
+    --user 65534:65534 \
+    --read-only \
+    --security-opt no-new-privileges=true \
+    --volume '/:/host:ro,rslave' \
+    "$NODE_EXPORTER_IMAGE" \
+    --path.rootfs=/host \
+    --web.listen-address="$NODE_EXPORTER_LISTEN_ADDRESS"
+
+  container_is_running "$NODE_EXPORTER_CONTAINER" || fail 'Node Exporter Docker container failed to start'
+}
+
 prepare_directories
-
-DOWNLOAD_DIR="$(mktemp -d)"
-trap 'rm -rf "$DOWNLOAD_DIR"' EXIT
-install_promtail
-if [[ "$INSTALL_NODE_EXPORTER" == true ]]; then
-  install_node_exporter
-fi
+remove_direct_promtail
 write_promtail_config
-write_service_units
+start_promtail
 
-systemctl daemon-reload
-systemctl enable promtail.service
-systemctl restart promtail.service
-systemctl is-active --quiet promtail.service || fail 'Promtail failed to start'
 if [[ "$INSTALL_NODE_EXPORTER" == true ]]; then
-  systemctl enable node_exporter.service
-  systemctl restart node_exporter.service
-  systemctl is-active --quiet node_exporter.service || fail 'Node Exporter failed to start'
-  printf 'Promtail %s and Node Exporter %s are active on %s\n' "$PROMTAIL_VERSION" "$NODE_EXPORTER_VERSION" "$HOST_LABEL"
+  start_node_exporter
+  printf 'Docker containers %s and %s are active on %s\n' "$PROMTAIL_CONTAINER" "$NODE_EXPORTER_CONTAINER" "$HOST_LABEL"
 else
-  printf 'Promtail %s is active on %s; Node Exporter was skipped\n' "$PROMTAIL_VERSION" "$HOST_LABEL"
+  printf 'Docker container %s is active on %s; Node Exporter was skipped\n' "$PROMTAIL_CONTAINER" "$HOST_LABEL"
 fi
