@@ -1,6 +1,8 @@
 # VPS Monitoring Agents
 
-This repository deploys Promtail and Prometheus Node Exporter as Docker containers on a Linux VPS through GitHub Actions. The deployment connects over SSH, pulls pinned images, creates persistent configuration and positions directories under `/opt/vps-monitoring`, and starts the containers.
+This repository deploys Promtail and Prometheus Node Exporter as Docker containers on a Linux VPS through GitHub Actions. The deployment connects over SSH, copies the repository's `docker-compose.yml` and `config/promtail/config.yml`, creates persistent runtime data under `/opt/vps-monitoring`, and starts the containers.
+
+The workflow keeps concerns separate: Compose and Promtail configuration are versioned in this repository, while the VPS-specific `.env` file is generated remotely with restricted permissions.
 
 ## GitHub Secrets
 
@@ -30,6 +32,8 @@ The workflow is manual by design so a normal repository push cannot change a VPS
 When enabled, Node Exporter runs as the `vps-node-exporter` container and exposes metrics at `http://VPS_HOST:9100/metrics`. The workflow does not change the VPS firewall; restrict port `9100` to the Prometheus server, or set `NODE_EXPORTER_LISTEN_ADDRESS` to a private or VPN address.
 
 Promtail runs as the `vps-promtail` container. It mounts `/var/log` and Docker's `/var/lib/docker/containers` read-only, so Docker JSON logs from containers such as `game-center-app-1` are sent to Loki. The container runs as root because Docker's container log files are commonly root-owned.
+
+The deployed Compose file is `/opt/vps-monitoring/docker-compose.yml`. The runtime environment is `/opt/vps-monitoring/.env` and contains the Loki URL, so it is not committed to the repository.
 
 Promtail is used because it is explicitly required here. Promtail is no longer receiving upstream feature development, so plan to migrate to Grafana Alloy for new deployments.
 

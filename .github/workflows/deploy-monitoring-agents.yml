@@ -69,6 +69,31 @@ jobs:
           printf '%s\n' "$VPS_SSH_KEY" > "$HOME/.ssh/deploy_key"
           chmod 600 "$HOME/.ssh/deploy_key"
 
+      - name: Copy Docker deployment files
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          scp \
+            -i "$HOME/.ssh/deploy_key" \
+            -P "$VPS_PORT" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            "$GITHUB_WORKSPACE/docker-compose.yml" \
+            "$VPS_USERNAME@$VPS_HOST:/tmp/vps-monitoring-docker-compose.yml"
+
+          scp \
+            -i "$HOME/.ssh/deploy_key" \
+            -P "$VPS_PORT" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            "$GITHUB_WORKSPACE/config/promtail/config.yml" \
+            "$VPS_USERNAME@$VPS_HOST:/tmp/vps-monitoring-promtail-config.yml"
+
       - name: Install and start agents
         shell: bash
         run: |
@@ -82,6 +107,8 @@ jobs:
             printf 'export VPS_NAME=%q\n' "$VPS_NAME"
             printf 'export NODE_EXPORTER_LISTEN_ADDRESS=%q\n' "$NODE_EXPORTER_LISTEN_ADDRESS"
             printf 'export INSTALL_NODE_EXPORTER=%q\n' "$INSTALL_NODE_EXPORTER"
+            printf 'export COMPOSE_SOURCE=%q\n' '/tmp/vps-monitoring-docker-compose.yml'
+            printf 'export PROMTAIL_CONFIG_SOURCE=%q\n' '/tmp/vps-monitoring-promtail-config.yml'
             cat "$installer"
           } | ssh \
             -i "$HOME/.ssh/deploy_key" \

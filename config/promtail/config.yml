@@ -1,0 +1,44 @@
+server:
+  http_listen_address: 127.0.0.1
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /var/lib/promtail/positions.yaml
+
+clients:
+  - url: '${LOKI_PUSH_URL}'
+    external_labels:
+      host: '${VPS_NAME}'
+
+scrape_configs:
+  - job_name: system
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: varlogs
+          host: '${VPS_NAME}'
+          __path__: /var/log/*.log
+      - targets:
+          - localhost
+        labels:
+          job: varlogs
+          host: '${VPS_NAME}'
+          __path__: /var/log/messages
+
+  - job_name: docker
+    pipeline_stages:
+      - docker: {}
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: docker
+          host: '${VPS_NAME}'
+          __path__: /var/lib/docker/containers/*/*-json.log
+    relabel_configs:
+      - source_labels:
+          - __path__
+        regex: /var/lib/docker/containers/([^/]+)/.*-json.log
+        target_label: container_id

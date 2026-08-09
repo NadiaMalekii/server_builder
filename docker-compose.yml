@@ -1,0 +1,40 @@
+services:
+  promtail:
+    image: grafana/promtail:${PROMTAIL_VERSION:-3.5.0}
+    container_name: vps-promtail
+    restart: unless-stopped
+    user: "0:0"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      LOKI_PUSH_URL: "${LOKI_PUSH_URL}"
+      VPS_NAME: "${VPS_NAME}"
+    volumes:
+      - ./promtail/config.yml:/etc/promtail/config.yml:ro
+      - ./promtail/positions:/var/lib/promtail
+      - /var/log:/var/log:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+    command:
+      - -config.file=/etc/promtail/config.yml
+      - -config.expand-env=true
+
+  node_exporter:
+    profiles:
+      - node-exporter
+    image: prom/node-exporter:v${NODE_EXPORTER_VERSION:-1.9.1}
+    container_name: vps-node-exporter
+    restart: unless-stopped
+    network_mode: host
+    pid: host
+    user: "65534:65534"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - /:/host:ro,rslave
+    command:
+      - --path.rootfs=/host
+      - --web.listen-address=${NODE_EXPORTER_LISTEN_ADDRESS:-0.0.0.0:9100}
