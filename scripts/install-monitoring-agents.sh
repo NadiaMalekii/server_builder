@@ -27,7 +27,9 @@ PROMTAIL_VERSION="${PROMTAIL_VERSION#v}"
 NODE_EXPORTER_VERSION="${NODE_EXPORTER_VERSION#v}"
 [[ "$PROMTAIL_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail 'PROMTAIL_VERSION must look like 1.2.3'
 [[ "$NODE_EXPORTER_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail 'NODE_EXPORTER_VERSION must look like 1.2.3'
-[[ "$NODE_EXPORTER_LISTEN_ADDRESS" =~ ^[A-Za-z0-9.:\[\]-]+$ ]] || fail 'NODE_EXPORTER_LISTEN_ADDRESS contains unsupported characters'
+if [[ ! "$NODE_EXPORTER_LISTEN_ADDRESS" =~ ^[[:alnum:].:-]+$ && ! "$NODE_EXPORTER_LISTEN_ADDRESS" =~ ^\[[[:alnum:].:]+\]:[0-9]+$ ]]; then
+  fail 'NODE_EXPORTER_LISTEN_ADDRESS contains unsupported characters'
+fi
 
 HOST_LABEL="${VPS_NAME:-$(hostname -s)}"
 [[ "$HOST_LABEL" =~ ^[A-Za-z0-9._-]+$ ]] || fail 'VPS_NAME must contain only letters, numbers, dots, underscores, or hyphens'
